@@ -86,7 +86,8 @@ function isoDate(v){
 }
 
 const normKey = s => fold(s);
-const isPaidSrc = s => { const f = fold(s); return f === "facebook-ads" || f === "facebook" || f === "fb" || f === "meta" || f === "instagram" || f === "ig"; };
+// Só conta como tráfego pago quem tem utm_source EXATAMENTE "facebook-ads" (regra do cliente).
+const isPaidSrc = s => fold(s) === "facebook-ads";
 
 // ----------------------------------------------------------------- ADS
 function parseAds(csv){
