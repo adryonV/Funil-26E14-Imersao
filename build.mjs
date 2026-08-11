@@ -10,7 +10,7 @@
 // aplicado NO DASHBOARD (accAd: t.spend += r.spend * tax), então TODAS as
 // métricas (CPM/CPC/CAC/ROAS/…) usam o gasto COM imposto.
 //
-// Só as vendas do dia SALES_FROM (11/08) pra cima entram (pedido do cliente).
+// A aba é dedicada ao lançamento, então TODAS as vendas dela entram (sem filtro de data).
 // ============================================================================
 import { writeFile, readFile } from "node:fs/promises";
 
@@ -22,7 +22,7 @@ const SALES_GID= "1045242815";        // aba "26-E14 IMERSAO"
 const SALES_TAB= "26-E14 IMERSAO";
 
 const TAX_RATE   = 1.1385;            // imposto obrigatório (aplicado no dashboard)
-const SALES_FROM = "2026-08-11";      // só linhas do dia 11/08 pra cima
+const DATE_FALLBACK = "2026-08-11";   // usado só se não houver linha de anúncio (fallback de date_min/max)
 const TRAFFIC_SRC= "meta-ads";        // marcador de venda de tráfego pago
 const PAID_STATUS = new Set(["approved","aprovado","complete","completed","paid","pago",""]); // Hotmart: só venda paga conta
 
@@ -146,11 +146,10 @@ function parseSales(csv, canon){
 
   const sales = [];
   const counts = { ad:0, adset:0, campaign:0, unmatched:0, none:0 };
-  let skippedStatus = 0, beforeFrom = 0;
+  let skippedStatus = 0;
 
   for (const r of rows.slice(1)){
     const d = isoDate(r[iDate]); if (!d) continue;
-    if (d < SALES_FROM){ beforeFrom++; continue; }                 // só 11/08 pra cima
     const status = fold(iStat >= 0 ? r[iStat] : "");
     if (iStat >= 0 && !PAID_STATUS.has(status)){ skippedStatus++; continue; } // só venda paga
 
@@ -189,7 +188,7 @@ function parseSales(csv, canon){
 
     sales.push({ d, v, src, c, s, a, m });
   }
-  return { sales, counts, skippedStatus, beforeFrom };
+  return { sales, counts, skippedStatus };
 }
 
 // ----------------------------------------------------------------- build
@@ -208,17 +207,16 @@ async function main(){
 
   const canon = parseAds(adsCsv);
   const ads = canon.ads;
-  const { sales, counts, skippedStatus, beforeFrom } = parseSales(salesCsv, canon);
+  const { sales, counts, skippedStatus } = parseSales(salesCsv, canon);
 
   const days = ads.map(r => r.d).sort();
-  const date_min = days[0] || SALES_FROM;
-  const date_max = days[days.length-1] || SALES_FROM;
+  const date_min = days[0] || DATE_FALLBACK;
+  const date_max = days[days.length-1] || DATE_FALLBACK;
 
   const trafSales = sales.filter(s => s.src === TRAFFIC_SRC).length;
 
   const warnings = [];
   if (!ads.length) warnings.push("Nenhuma linha de anúncio encontrada na planilha de métricas.");
-  if (beforeFrom)  warnings.push(`${beforeFrom} venda(s) anteriores a ${SALES_FROM.split("-").reverse().join("/")} foram ignoradas (regra: só 11/08 pra cima).`);
   if (skippedStatus) warnings.push(`${skippedStatus} linha(s) de compra com status não-pago foram ignoradas.`);
   if (counts.unmatched) warnings.push(`${counts.unmatched} venda(s) de tráfego pago sem UTM/SCK reconhecível — contam no total de mídia, mas ficam "sem campanha".`);
 
