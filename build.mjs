@@ -18,7 +18,8 @@ import { writeFile, readFile } from "node:fs/promises";
 const ADS_ID   = "1AzTwhLfEKsMlNvnmvQ_Cday0N0YeKAsTz4g6H5OUnCI";
 const ADS_GID  = "0";                 // aba "Meta Ads"
 const SALES_ID = "1EFghI3MYmjRvIGKUHTermmTb74DZDNcyrI48bZ_39t4";
-const SALES_GID= "1648121717";        // aba "OUTRAS"
+const SALES_GID= "1045242815";        // aba "26-E14 IMERSAO"
+const SALES_TAB= "26-E14 IMERSAO";
 
 const TAX_RATE   = 1.1385;            // imposto obrigatório (aplicado no dashboard)
 const SALES_FROM = "2026-08-11";      // só linhas do dia 11/08 pra cima
@@ -232,7 +233,7 @@ async function main(){
     date_min, date_max,
     ads_url:   `https://docs.google.com/spreadsheets/d/${ADS_ID}/edit#gid=${ADS_GID}`,
     sales_url: `https://docs.google.com/spreadsheets/d/${SALES_ID}/edit#gid=${SALES_GID}`,
-    sales_tab: "OUTRAS",
+    sales_tab: SALES_TAB,
     counts: {
       ads_rows: ads.length,
       sales_rows: sales.length,
