@@ -1117,7 +1117,21 @@ function renderDaily(){
     const v = c.fmt(r[c.k]);
     return `<td>${st ? `<span class="cell-scale" style="${st}">${v}</span>` : v}</td>`;
   }).join("")}</tr>`).join("");
-  document.getElementById("dtbl").innerHTML = `<thead><tr>${head}</tr></thead><tbody>${body}</tbody>`;
+  // Rodapé: média diária de cada métrica (média dos valores dos dias com atividade).
+  const activeDays = rows.filter(r => r.spend > 0);
+  const base = activeDays.length ? activeDays : rows;
+  const mean = k => {
+    const vals = base.map(r => r[k]).filter(v => v !== null && isFinite(v));
+    return vals.length ? vals.reduce((x,y) => x + y, 0) / vals.length : null;
+  };
+  const avgFmt = (c, v) => (v === null || !isFinite(v)) ? "—"
+    : (c.k === "sales" || c.k === "ic") ? nf1.format(v) : c.fmt(v);
+  const foot = DCOLS.map(c =>
+    c.k === "d" ? `<td>Média/dia · ${base.length} dia${base.length === 1 ? "" : "s"}</td>`
+                : `<td>${avgFmt(c, mean(c.k))}</td>`
+  ).join("");
+  document.getElementById("dtbl").innerHTML =
+    `<thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot><tr>${foot}</tr></tfoot>`;
 }
 
 /* ============================================================ relatório
@@ -1444,7 +1458,7 @@ function shell(){
 
     <div class="panel">
       <h2>Visão diária — principais métricas por dia</h2>
-      <p class="note">Uma linha por dia, mais recente no topo. Heatmap por coluna: <b style="color:var(--good-text)">verde = melhor</b>,
+      <p class="note">Uma linha por dia, mais recente no topo; a última linha é a <b style="color:var(--ink-2)">média diária</b> de cada métrica. Heatmap por coluna: <b style="color:var(--good-text)">verde = melhor</b>,
         <b style="color:var(--critical)">vermelho = pior</b> no período — CPM, CPC e CAC quanto menores melhor; ROAS quanto maior melhor.</p>
       <div class="tblwrap"><table id="dtbl" class="daily"></table></div>
     </div>
