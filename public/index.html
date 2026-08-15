@@ -136,6 +136,12 @@ button,select,input{font:inherit;color:inherit}
   background:var(--plane);border:1px solid var(--ring);border-radius:8px;padding:5px 8px;font-size:13px;
 }
 .spacer{flex:1 1 auto}
+.optsearch{display:flex;align-items:center;gap:8px;margin:2px 0 12px;
+  background:var(--plane);border:1px solid var(--ring);border-radius:9px;padding:7px 11px;max-width:520px;color:var(--ink-3)}
+.optsearch:focus-within{border-color:color-mix(in srgb,var(--brand) 55%,var(--ring))}
+.optsearch input{flex:1;border:0;background:transparent;font:inherit;font-size:13.5px;color:var(--ink-1);outline:none;min-width:0}
+.optsearch input::placeholder{color:var(--ink-3)}
+.optsearch .btn{padding:4px 10px;font-size:12px}
 
 /* ---------------------------------------------------------------- cards */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:12px;margin-bottom:14px}
@@ -345,11 +351,12 @@ const dayFull = iso => { const [y,m,d] = iso.split("-"); return `${d}/${m}/${y}`
 const addDays = (iso,n) => { const d = new Date(iso+"T12:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); };
 const diffDays= (a,b) => Math.round((new Date(b+"T12:00:00Z") - new Date(a+"T12:00:00Z"))/864e5);
 const escape_ = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const norm    = s => String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").trim();
 
 /* ============================================================ estado */
 let DATA = null;
 let STATE = {from:null, to:null, compare:true, metric:"spend", mode:"traffic", tab:"traffic",
-             treeSort:{key:"spend", dir:-1}, expanded:new Set(), goal:null, preset:"all"};
+             treeSort:{key:"spend", dir:-1}, expanded:new Set(), goal:null, preset:"all", optQuery:""};
 
 /* ============================================================ métricas
    Regra única do projeto: gasto = gasto bruto x imposto. Toda métrica derivada
@@ -1012,21 +1019,43 @@ function sortNodes(list, key, dir){
     return dir * (av - bv);
   });
 }
+/* Achata a árvore para linhas. Com filtro ativo (STATE.optQuery), mantém só os
+   ramos cujo nome de campanha, conjunto OU anúncio casa com a busca, e
+   auto-expande o que casou. Retorna também as chaves "abertas" p/ o caret. */
 function flatten(camps){
-  const {key, dir} = STATE.treeSort, out = [];
+  const {key, dir} = STATE.treeSort;
+  const q = norm(STATE.optQuery || ""), searching = q.length > 0;
+  const out = [], openKeys = new Set();
   for (const c of sortNodes(camps, key, dir)){
+    const cM = !searching || norm(c.label).includes(q);
+    const setRows = [];
+    for (const s of sortNodes(c.kids, key, dir)){
+      const sM = norm(s.label).includes(q);
+      let ads = sortNodes(s.kids, key, dir);
+      if (searching && !cM && !sM) ads = ads.filter(a => norm(a.label).includes(q));
+      if (!searching || cM || sM || ads.length > 0) setRows.push({s, ads});
+    }
+    if (searching && !cM && setRows.length === 0) continue;   // nada casou nesta campanha
     out.push(c);
-    if (STATE.expanded.has(c.key)) for (const s of sortNodes(c.kids, key, dir)){
+    const campOpen = searching ? setRows.length > 0 : STATE.expanded.has(c.key);
+    if (!campOpen) continue;
+    openKeys.add(c.key);
+    for (const {s, ads} of setRows){
       out.push(s);
-      if (STATE.expanded.has(s.key)) for (const a of sortNodes(s.kids, key, dir)) out.push(a);
+      const setOpen = searching ? ads.length > 0 : STATE.expanded.has(s.key);
+      if (!setOpen) continue;
+      openKeys.add(s.key);
+      for (const a of ads) out.push(a);
     }
   }
-  return out;
+  return {rows: out, openKeys};
 }
 
 function renderOpt(){
   const {camps, un} = buildTree(STATE.from, STATE.to);
   const {key, dir} = STATE.treeSort;
+  const {rows, openKeys} = flatten(camps);
+  const searching = norm(STATE.optQuery || "").length > 0;
 
   // Escala de cor calibrada no nível de campanha (baseline estável).
   const scales = {};
@@ -1051,7 +1080,7 @@ function renderOpt(){
 
   const rowHTML = r => {
     const exp = r.level < 2 && r.kids && r.kids.length > 0;
-    const open = STATE.expanded.has(r.key);
+    const open = openKeys.has(r.key);
     const caret = `<span class="caret">${exp ? "▸" : ""}</span>`;
     return `<tr class="lv${r.level}${exp ? " exp" : ""}${open ? " open" : ""}" data-key="${encodeURIComponent(r.key)}">
       <td><span class="nm">${caret}${escape_(r.label)}</span></td>
@@ -1064,18 +1093,22 @@ function renderOpt(){
   };
 
   const tot = derive(camps.reduce((t,r) => { for (const k of RAW) t[k] += r[k]; return t; }, blank()));
-  const rows = flatten(camps);
   const unLabel = STATE.mode === "total"
     ? "— sem campanha (orgânico/direto ou UTM não casada) —"
     : "— tráfego sem campanha casada (UTM não bateu) —";
-  const unRow = un.sales > 0
+  const unRow = (un.sales > 0 && !searching)
     ? `<tr class="lv0 muted-row"><td><span class="nm"><span class="caret"></span>${unLabel}</span></td>${TCOLS.slice(1).map(c => `<td>${c.k === "sales" || c.k === "rev" ? c.fmt(un[c.k]) : "—"}</td>`).join("")}</tr>`
     : "";
 
+  const visCamps = rows.filter(r => r.level === 0).length;
+  const emptyMsg = searching ? "Nenhuma campanha, conjunto ou anúncio com esse nome no período." : "Nenhum dado no período.";
+  const footLabel = searching
+    ? `Total do período · filtro “${escape_(STATE.optQuery)}” (${visCamps} de ${camps.length} campanha(s))`
+    : `Total — ${camps.length} campanha(s)`;
   document.getElementById("tbl").innerHTML = `
     <thead><tr>${head}</tr></thead>
-    <tbody>${rows.map(rowHTML).join("") || `<tr><td colspan="${TCOLS.length}" style="text-align:center;color:var(--ink-3);padding:32px">Nenhum dado no período.</td></tr>`}${unRow}</tbody>
-    <tfoot><tr><td>Total — ${camps.length} campanha(s)</td>${TCOLS.slice(1).map(c => `<td>${c.fmt(tot[c.k])}</td>`).join("")}</tr></tfoot>`;
+    <tbody>${rows.map(rowHTML).join("") || `<tr><td colspan="${TCOLS.length}" style="text-align:center;color:var(--ink-3);padding:32px">${emptyMsg}</td></tr>`}${unRow}</tbody>
+    <tfoot><tr><td>${footLabel}</td>${TCOLS.slice(1).map(c => `<td>${c.fmt(tot[c.k])}</td>`).join("")}</tr></tfoot>`;
 
   document.querySelectorAll("#tbl tbody tr.exp").forEach(tr => {
     tr.querySelector("td:first-child").onclick = () => {
@@ -1471,6 +1504,11 @@ function shell(){
         Só entram aqui as <b style="color:var(--ink-1)">vendas de tráfego (utm_source = ${escape_(m.traffic_source||"meta-ads")})</b>, agrupadas pela campanha de origem;
         as de tráfego cuja UTM não casou aparecem em “tráfego sem campanha casada”. Vendas orgânicas/diretas não entram.
       </p>
+      <div class="optsearch">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14" stroke-linecap="round"/></svg>
+        <input type="search" id="optSearch" placeholder="Filtrar por campanha, conjunto ou anúncio…" autocomplete="off" spellcheck="false">
+        <button class="btn" id="optClear" type="button" title="Limpar filtro" hidden>Limpar</button>
+      </div>
       <div class="tblwrap"><table id="tbl" class="tree"></table></div>
     </div>
 
@@ -1533,6 +1571,17 @@ function shell(){
     try { STATE.goal ? localStorage.setItem("funnel-goal", STATE.goal) : localStorage.removeItem("funnel-goal"); } catch(e){}
     renderFunnel(aggregate(STATE.from, STATE.to));
   };
+
+  // busca/filtro da tabela de Otimização — re-renderiza só a árvore
+  const optSearch = document.getElementById("optSearch"), optClear = document.getElementById("optClear");
+  if (optSearch){
+    optSearch.value = STATE.optQuery || "";
+    optClear.hidden = !optSearch.value;
+    const applyOptQuery = () => { STATE.optQuery = optSearch.value; optClear.hidden = !optSearch.value; renderOpt(); };
+    optSearch.oninput = applyOptQuery;
+    optSearch.onkeydown = e => { if (e.key === "Escape"){ optSearch.value = ""; applyOptQuery(); } };
+    optClear.onclick = () => { optSearch.value = ""; applyOptQuery(); optSearch.focus(); };
+  }
 
   // abas: Visão Geral (todas) · Tráfego Pago (meta-ads) · Relatório
   try { const tv = localStorage.getItem("funnel-tab"); if (["total","traffic","report"].includes(tv)) STATE.tab = tv; } catch(e){}
