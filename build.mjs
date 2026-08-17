@@ -25,6 +25,9 @@ const TAX_RATE   = 1.1385;            // imposto obrigatório (aplicado no dashb
 const DATE_FALLBACK = "2026-08-11";   // usado só se não houver linha de anúncio (fallback de date_min/max)
 const TRAFFIC_SRC= "meta-ads";        // marcador de venda de tráfego pago
 const PAID_STATUS = new Set(["approved","aprovado","complete","completed","paid","pago",""]); // Hotmart: só venda paga conta
+// Produto CORE: só o pedido que contém este produto conta como venda. Os demais
+// produtos do pedido (order bumps) somam receita; pedido sem o core NÃO é venda.
+const CORE_PRODUCT = "imersao lancamento que vende";   // comparado já normalizado (sem acento/caixa)
 
 const csvUrl = (id, gid) => `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
 
@@ -137,6 +140,7 @@ function parseSales(csv, canon){
   const iSck  = at("sck bruto","sck","SCK");
   const iSrcB = at("src bruto");
   const iPed  = at("Pedido","Order","Order Id","Order ID","Transação","Transacao");
+  const iProd = at("Produto","Product","Oferta/Produto","Item","Oferta");
 
   const { canonCamp, canonSet, canonAd } = canon;
   // Fallback por SCK/src bruto: acha nome conhecido por substring (longest-first).
@@ -174,22 +178,25 @@ function parseSales(csv, canon){
   const rankOf = o => o.src !== TRAFFIC_SRC ? 0
     : o.m === "ad" ? 4 : o.m === "adset" ? 3 : o.m === "campaign" ? 2 : 1;
 
-  // 1 pedido = 1 venda. Order bumps (linhas extras com o MESMO Pedido) somam
-  // como receita da venda, não como venda nova. Agrupa por Pedido.
+  // 1 pedido = 1 venda, mas SÓ conta como venda o pedido que contém o produto
+  // CORE ("Imersão Lançamento Que Vende"). Os demais produtos do pedido (order
+  // bumps) somam receita; pedido sem o core NÃO é venda. Agrupa por Pedido.
   const orders = new Map();
-  let skippedStatus = 0, lineItems = 0, blankSeq = 0;
+  let skippedStatus = 0, blankSeq = 0;
   for (const r of rows.slice(1)){
     const d = isoDate(r[iDate]); if (!d) continue;
     const status = fold(iStat >= 0 ? r[iStat] : "");
     if (iStat >= 0 && !PAID_STATUS.has(status)){ skippedStatus++; continue; } // só venda paga
-    lineItems++;
     const ped = iPed >= 0 ? fold(r[iPed]) : "";
     const key = ped || ("__semped" + (++blankSeq));   // sem Pedido → conta como venda isolada
+    const isCore = iProd < 0 ? true : fold(r[iProd]) === CORE_PRODUCT;   // sem coluna Produto → não filtra
     const line = Object.assign({ d, v: num(r[iVal]) }, resolveRow(r));
     line.rank = rankOf(line);
     const o = orders.get(key);
-    if (!o){ orders.set(key, line); continue; }
+    if (!o){ orders.set(key, Object.assign(line, { lines:1, hasCore:isCore })); continue; }
     o.v += line.v;                                     // bump → receita do pedido
+    o.lines++;
+    o.hasCore = o.hasCore || isCore;
     if (line.d < o.d) o.d = line.d;                    // data = a mais antiga do pedido
     if (line.rank > o.rank){                           // melhor atribuição vence
       o.src = line.src; o.c = line.c; o.s = line.s; o.a = line.a; o.m = line.m; o.rank = line.rank;
@@ -198,7 +205,10 @@ function parseSales(csv, canon){
 
   const sales = [];
   const counts = { ad:0, adset:0, campaign:0, unmatched:0, none:0 };
+  let mergedBumps = 0, excludedNonCore = 0;
   for (const o of orders.values()){
+    if (!o.hasCore){ excludedNonCore++; continue; }   // pedido sem o produto core → não é venda
+    mergedBumps += o.lines - 1;                        // linhas extras do pedido = order bumps
     if (o.m === "ad") counts.ad++;
     else if (o.m === "adset") counts.adset++;
     else if (o.m === "campaign") counts.campaign++;
@@ -206,8 +216,7 @@ function parseSales(csv, canon){
     else counts.none++;
     sales.push({ d: o.d, v: o.v, src: o.src, c: o.c, s: o.s, a: o.a, m: o.m });
   }
-  const mergedBumps = lineItems - orders.size;
-  return { sales, counts, skippedStatus, mergedBumps };
+  return { sales, counts, skippedStatus, mergedBumps, excludedNonCore };
 }
 
 // ----------------------------------------------------------------- build
@@ -226,7 +235,7 @@ async function main(){
 
   const canon = parseAds(adsCsv);
   const ads = canon.ads;
-  const { sales, counts, skippedStatus, mergedBumps } = parseSales(salesCsv, canon);
+  const { sales, counts, skippedStatus, mergedBumps, excludedNonCore } = parseSales(salesCsv, canon);
 
   const days = ads.map(r => r.d).sort();
   const date_min = days[0] || DATE_FALLBACK;
@@ -238,6 +247,7 @@ async function main(){
   if (!ads.length) warnings.push("Nenhuma linha de anúncio encontrada na planilha de métricas.");
   if (skippedStatus) warnings.push(`${skippedStatus} linha(s) de compra com status não-pago foram ignoradas.`);
   if (mergedBumps) warnings.push(`${mergedBumps} order bump(s) somados à venda do mesmo pedido (contam como receita, não como venda nova).`);
+  if (excludedNonCore) warnings.push(`${excludedNonCore} pedido(s) sem o produto core "Imersão Lançamento Que Vende" não contam como venda (só bumps avulsos).`);
   if (counts.unmatched) warnings.push(`${counts.unmatched} venda(s) de tráfego pago sem UTM/SCK reconhecível — contam no total de mídia, mas ficam "sem campanha".`);
 
   const meta = {
