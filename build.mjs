@@ -136,6 +136,7 @@ function parseSales(csv, canon){
   const iCont = at("UTM Content","utm_content");
   const iSck  = at("sck bruto","sck","SCK");
   const iSrcB = at("src bruto");
+  const iPed  = at("Pedido","Order","Order Id","Order ID","Transação","Transacao");
 
   const { canonCamp, canonSet, canonAd } = canon;
   // Fallback por SCK/src bruto: acha nome conhecido por substring (longest-first).
@@ -144,21 +145,11 @@ function parseSales(csv, canon){
   const knownCamp= [...canonCamp.values()].sort((a,b)=>b.length-a.length);
   const findIn = (blob, list) => { const f = fold(blob); for (const name of list){ if (f.includes(fold(name))) return name; } return ""; };
 
-  const sales = [];
-  const counts = { ad:0, adset:0, campaign:0, unmatched:0, none:0 };
-  let skippedStatus = 0;
-
-  for (const r of rows.slice(1)){
-    const d = isoDate(r[iDate]); if (!d) continue;
-    const status = fold(iStat >= 0 ? r[iStat] : "");
-    if (iStat >= 0 && !PAID_STATUS.has(status)){ skippedStatus++; continue; } // só venda paga
-
-    const v = num(r[iVal]);
-    const rawSrc = iSrc >= 0 ? r[iSrc] : "";
-    const paid = isPaidSrc(rawSrc);
-    const src = paid ? TRAFFIC_SRC : "organico";
-
-    // Atribuição: UTM direto (campaign/medium/content) → nomes canônicos da planilha de anúncios.
+  // Resolve origem + atribuição de UMA linha. Todas as linhas de um pedido
+  // (produto principal + order bumps) compartilham a mesma UTM, então qualquer
+  // uma serve; ainda assim escolhemos a de melhor atribuição por segurança.
+  const resolveRow = r => {
+    const paid = isPaidSrc(iSrc >= 0 ? r[iSrc] : "");
     let c = "", s = "", a = "", m = "";
     if (paid){
       const uCamp = iCamp >= 0 ? (r[iCamp]||"").trim() : "";
@@ -167,8 +158,7 @@ function parseSales(csv, canon){
       c = canonCamp.get(normKey(uCamp)) || "";
       s = canonSet.get(normKey(uMed))   || "";
       a = canonAd.get(normKey(uCont))   || "";
-      // Fallback: varre sck/src bruto por nomes conhecidos (UTM às vezes vem quebrada).
-      if (!a || !c){
+      if (!a || !c){   // fallback: varre sck/src bruto por nomes conhecidos
         const blob = [(iSck>=0?r[iSck]:""), (iSrcB>=0?r[iSrcB]:"")].join(" | ");
         if (!a) a = findIn(blob, knownAds);
         if (!s) s = findIn(blob, knownSets);
@@ -179,16 +169,45 @@ function parseSales(csv, canon){
       else if (c)      m = "campaign";
       else             m = "";           // paga mas sem campanha casada → unmatched
     }
+    return { src: paid ? TRAFFIC_SRC : "organico", c, s, a, m };
+  };
+  const rankOf = o => o.src !== TRAFFIC_SRC ? 0
+    : o.m === "ad" ? 4 : o.m === "adset" ? 3 : o.m === "campaign" ? 2 : 1;
 
-    if (m === "ad") counts.ad++;
-    else if (m === "adset") counts.adset++;
-    else if (m === "campaign") counts.campaign++;
-    else if (paid) counts.unmatched++;
-    else counts.none++;
-
-    sales.push({ d, v, src, c, s, a, m });
+  // 1 pedido = 1 venda. Order bumps (linhas extras com o MESMO Pedido) somam
+  // como receita da venda, não como venda nova. Agrupa por Pedido.
+  const orders = new Map();
+  let skippedStatus = 0, lineItems = 0, blankSeq = 0;
+  for (const r of rows.slice(1)){
+    const d = isoDate(r[iDate]); if (!d) continue;
+    const status = fold(iStat >= 0 ? r[iStat] : "");
+    if (iStat >= 0 && !PAID_STATUS.has(status)){ skippedStatus++; continue; } // só venda paga
+    lineItems++;
+    const ped = iPed >= 0 ? fold(r[iPed]) : "";
+    const key = ped || ("__semped" + (++blankSeq));   // sem Pedido → conta como venda isolada
+    const line = Object.assign({ d, v: num(r[iVal]) }, resolveRow(r));
+    line.rank = rankOf(line);
+    const o = orders.get(key);
+    if (!o){ orders.set(key, line); continue; }
+    o.v += line.v;                                     // bump → receita do pedido
+    if (line.d < o.d) o.d = line.d;                    // data = a mais antiga do pedido
+    if (line.rank > o.rank){                           // melhor atribuição vence
+      o.src = line.src; o.c = line.c; o.s = line.s; o.a = line.a; o.m = line.m; o.rank = line.rank;
+    }
   }
-  return { sales, counts, skippedStatus };
+
+  const sales = [];
+  const counts = { ad:0, adset:0, campaign:0, unmatched:0, none:0 };
+  for (const o of orders.values()){
+    if (o.m === "ad") counts.ad++;
+    else if (o.m === "adset") counts.adset++;
+    else if (o.m === "campaign") counts.campaign++;
+    else if (o.src === TRAFFIC_SRC) counts.unmatched++;
+    else counts.none++;
+    sales.push({ d: o.d, v: o.v, src: o.src, c: o.c, s: o.s, a: o.a, m: o.m });
+  }
+  const mergedBumps = lineItems - orders.size;
+  return { sales, counts, skippedStatus, mergedBumps };
 }
 
 // ----------------------------------------------------------------- build
@@ -207,7 +226,7 @@ async function main(){
 
   const canon = parseAds(adsCsv);
   const ads = canon.ads;
-  const { sales, counts, skippedStatus } = parseSales(salesCsv, canon);
+  const { sales, counts, skippedStatus, mergedBumps } = parseSales(salesCsv, canon);
 
   const days = ads.map(r => r.d).sort();
   const date_min = days[0] || DATE_FALLBACK;
@@ -218,6 +237,7 @@ async function main(){
   const warnings = [];
   if (!ads.length) warnings.push("Nenhuma linha de anúncio encontrada na planilha de métricas.");
   if (skippedStatus) warnings.push(`${skippedStatus} linha(s) de compra com status não-pago foram ignoradas.`);
+  if (mergedBumps) warnings.push(`${mergedBumps} order bump(s) somados à venda do mesmo pedido (contam como receita, não como venda nova).`);
   if (counts.unmatched) warnings.push(`${counts.unmatched} venda(s) de tráfego pago sem UTM/SCK reconhecível — contam no total de mídia, mas ficam "sem campanha".`);
 
   const meta = {
