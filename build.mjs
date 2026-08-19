@@ -24,7 +24,7 @@ const SALES_TAB= "26-E14 IMERSAO";
 const TAX_RATE   = 1.1385;            // imposto obrigatório (aplicado no dashboard)
 const DATE_FALLBACK = "2026-08-11";   // usado só se não houver linha de anúncio (fallback de date_min/max)
 const TRAFFIC_SRC= "meta-ads";        // marcador de venda de tráfego pago
-const PAID_STATUS = new Set(["approved","aprovado","complete","completed","paid","pago",""]); // Hotmart: só venda paga conta
+const PAID_STATUS = new Set(["approved","aprovado","aprovada","complete","completed","completa","concluida","concluido","paid","pago",""]); // Hotmart: só venda paga conta (PT + EN)
 // Produto CORE: só o pedido que contém este produto conta como venda. Os demais
 // produtos do pedido (order bumps) somam receita; pedido sem o core NÃO é venda.
 const CORE_PRODUCT = "imersao lancamento que vende";   // comparado já normalizado (sem acento/caixa)
@@ -130,9 +130,10 @@ function parseAds(csv){
 function parseSales(csv, canon){
   const rows = parseCsv(csv);
   const H = rows[0]; const at = headerIndex(H);
-  const iDate = at("Data/Hora","Data","Date","DATA(UTC-3)","Data da Compra");
+  // Data da venda = quando foi PAGA (Aprovado em); cai p/ data do pedido / Data/Hora se faltar.
+  const iDate = at("Aprovado em","Aprovada em","Data/Hora","Data do pedido","Data da Compra","Data","Date","DATA(UTC-3)");
   const iVal  = at("Valor","Valor da Compra","Bruto","Faturamento","Amount","Value","Revenue");
-  const iStat = at("Status","Situação");
+  const iStat = at("Situação","Situacao","Status");
   const iSrc  = at("UTM Source","Utm_source","utm_source");
   const iMed  = at("UTM Medium","utm_medium");
   const iCamp = at("UTM Campaign","utm_campaign");
